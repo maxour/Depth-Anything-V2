@@ -12,18 +12,19 @@ from depth_anything_v2.dpt import DepthAnythingV2
 # === 配置 ===
 DEVICE = 'mps' if torch.backends.mps.is_available() else 'cpu'
 # 这里的 encoder 必须和你下载的模型文件名一致 (vits, vitb, vitl)
-MODEL_CONFIG = {
-    'encoder': 'vits', 
-    'features': 64, 
-    'out_channels': [48, 96, 192, 384]
-}
-MODEL_PATH = 'checkpoints/depth_anything_v2_vits.pth' # 确保路径正确
+model_configs = {
+        'vits': {'encoder': 'vits', 'features': 64, 'out_channels': [48, 96, 192, 384]},
+        'vitb': {'encoder': 'vitb', 'features': 128, 'out_channels': [96, 192, 384, 768]},
+        'vitl': {'encoder': 'vitl', 'features': 256, 'out_channels': [256, 512, 1024, 1024]},
+        'vitg': {'encoder': 'vitg', 'features': 384, 'out_channels': [1536, 1536, 1536, 1536]}
+    }
+MODEL_PATH = 'checkpoints/depth_anything_v2_vitl.pth' # 确保路径正确
 
-def extract_and_process(video_path, frame_index, output_dir):
+def extract_and_process(video_path, frame_index, output_dir, encoder):
     # 1. 初始化模型
     print(f"🚀 Loading model to {DEVICE}...")
-    depth_model = DepthAnythingV2(**MODEL_CONFIG)
-    depth_model.load_state_dict(torch.load(MODEL_PATH, map_location='cpu'))
+    depth_anything = DepthAnythingV2(**model_configs[encoder])
+    depth_anything.load_state_dict(torch.load(f'checkpoints/depth_anything_v2_{encoder}.pth', map_location='cpu'))
     depth_model = depth_model.to(DEVICE).eval()
 
     # 2. 读取视频指定帧
@@ -103,6 +104,7 @@ if __name__ == '__main__':
     parser.add_argument('--video', type=str, required=True, help='Path to insv/mp4 video')
     parser.add_argument('--frame', type=int, default=0, help='Frame index to extract')
     parser.add_argument('--out', type=str, default='./out', help='Output folder')
+    parser.add_argument('--encoder', type=str, default='vitl', choices=['vits', 'vitb', 'vitl', 'vitg'])
     
     args = parser.parse_args()
-    extract_and_process(args.video, args.frame, args.out)
+    extract_and_process(args.video, args.frame, args.out, args.encoder)
