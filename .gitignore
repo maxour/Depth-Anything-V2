@@ -103,5 +103,6 @@ build/Release
 # python venv
 venv
 
-# pth
+# large files
 *.pth
+*.mp4
