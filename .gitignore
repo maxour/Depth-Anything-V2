@@ -104,4 +104,4 @@ build/Release
 venv
 
 # pth
-.pth
+*.pth
