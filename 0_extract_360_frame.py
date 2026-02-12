@@ -18,13 +18,12 @@ model_configs = {
         'vitl': {'encoder': 'vitl', 'features': 256, 'out_channels': [256, 512, 1024, 1024]},
         'vitg': {'encoder': 'vitg', 'features': 384, 'out_channels': [1536, 1536, 1536, 1536]}
     }
-MODEL_PATH = 'checkpoints/depth_anything_v2_vitl.pth' # 确保路径正确
 
 def extract_and_process(video_path, frame_index, output_dir, encoder):
     # 1. 初始化模型
     print(f"🚀 Loading model to {DEVICE}...")
-    depth_anything = DepthAnythingV2(**model_configs[encoder])
-    depth_anything.load_state_dict(torch.load(f'checkpoints/depth_anything_v2_{encoder}.pth', map_location='cpu'))
+    depth_model = DepthAnythingV2(**model_configs[encoder])
+    depth_model.load_state_dict(torch.load(f'checkpoints/depth_anything_v2_{encoder}.pth', map_location='cpu'))
     depth_model = depth_model.to(DEVICE).eval()
 
     # 2. 读取视频指定帧
