@@ -225,8 +225,8 @@ def analyze_scene_advanced(rgb_path, depth_path, output_dir):
     if not os.path.exists(output_dir):
         os.makedirs(output_dir)
         
-    json_path = os.path.join(output_dir, "scene_meta_v2.json")
-    vis_path = os.path.join(output_dir, "scene_debug_v2.jpg")
+    json_path = os.path.join(output_dir, "scene_meta_v3.json")
+    vis_path = os.path.join(output_dir, "scene_debug_v3.jpg")
     
     output_data = {
         "scene_name": os.path.basename(rgb_path),
