@@ -1,0 +1,30 @@
+{
+    "scene_name": "VID_20260124_111918_00_039_213547_f150_RGB.jpg",
+    "resolution": [
+        5760,
+        2880
+    ],
+    "lighting": {
+        "sun_position": {
+            "pixel": [
+                4070,
+                581
+            ],
+            "uv": [
+                0.7066,
+                0.2017
+            ],
+            "rotation_angle": 254.38
+        },
+        "sun_intensity_estimate": 1.0,
+        "ambient_color_rgb": [
+            115,
+            136,
+            161
+        ]
+    },
+    "reference_scales": {
+        "center": 0.1,
+        "bottom_ground": 0.4196078431372549
+    }
+}

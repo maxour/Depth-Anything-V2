@@ -1,19 +1,24 @@
 # 切换到独立环境
 # python3 -m venv venv
 # source venv/bin/activate
+# B. 前端如何使用 Scale Grid？
+# 这份代码生成的 JSON 包含了一个结构化的网格数据。在前端（Three.js / React / Vue）中实现小孩跑动逻辑非常简单：
+# 加载 JSON：将 nav_mesh.points 存入一个二维数组 Grid[row][col]。
+# 获取 Avatar 当前坐标：假设小孩跑到了 u = 0.55, v = 0.82。
+# 查找最近网格点：u=0.55 介于网格列 19 和 20 之间。v=0.82 介于网格行 6 和 7 之间。
+# 计算 Scale：找到这 4 个相邻点的 scale 值。
+# 使用简单的双线性插值 (Bilinear Interpolation) 算出当前点的精确 Scale。
+# 公式：$Scale = w_1 S_{TL} + w_2 S_{TR} + w_3 S_{BL} + w_4 S_{BR}$
 import cv2
 import numpy as np
 import json
 import argparse
 import os
 
-def analyze_scene(rgb_path, depth_path, output_dir):
-    """
-    综合分析场景光照和深度信息
-    """
+def analyze_scene_advanced(rgb_path, depth_path, output_dir):
     # 1. 读取图像
     rgb_img = cv2.imread(rgb_path)
-    depth_img = cv2.imread(depth_path, cv2.IMREAD_GRAYSCALE) # 读取单通道灰度
+    depth_img = cv2.imread(depth_path, cv2.IMREAD_GRAYSCALE) # 单通道深度
     
     if rgb_img is None or depth_img is None:
         print("❌ Error: 无法读取 RGB 或 Depth 图片")
@@ -22,114 +27,190 @@ def analyze_scene(rgb_path, depth_path, output_dir):
     h, w = rgb_img.shape[:2]
     print(f"🖼  Processing: {w}x{h}")
 
-    # ==========================
-    # Part 1: 光照分析 (Lighting)
-    # ==========================
+    # ==========================================
+    # Part 1: 高级多光源检测 (Multi-Light Detection)
+    # ==========================================
     
-    # A. 寻找主光源 (Sun Position)
-    # 转为灰度图
+    # 转换为灰度
     gray = cv2.cvtColor(rgb_img, cv2.COLOR_BGR2GRAY)
-    # 高斯模糊：去除噪点，让光源中心更聚拢 (核大小 41x41)
-    blurred = cv2.GaussianBlur(gray, (41, 41), 0)
-    # 寻找最大值位置
-    min_val, max_val, min_loc, max_loc = cv2.minMaxLoc(blurred)
     
-    sun_x, sun_y = max_loc
+    # 策略：不进行大范围模糊，保留锐利的高光点
+    # 仅做极微小的模糊以消除噪点
+    gray_blur = cv2.GaussianBlur(gray, (3, 3), 0)
     
-    # B. 计算环境光 (Ambient Color)
-    # 计算全图平均颜色 (BGR -> RGB)
-    avg_color_bgr = np.mean(rgb_img, axis=(0, 1))
-    ambient_rgb = [int(avg_color_bgr[2]), int(avg_color_bgr[1]), int(avg_color_bgr[0])]
+    # 阈值化：只提取极亮区域 (亮度 > 240/255)
+    # 这能有效过滤掉普通的白云，只留下太阳或路灯核心
+    ret, thresh = cv2.threshold(gray_blur, 240, 255, cv2.THRESH_BINARY)
+    
+    # 连通域分析：找出所有独立的发光块
+    num_labels, labels, stats, centroids = cv2.connectedComponentsWithStats(thresh, connectivity=8)
+    
+    light_sources = []
+    
+    # 遍历所有连通域 (label 0 是背景，跳过)
+    for i in range(1, num_labels):
+        area = stats[i, cv2.CC_STAT_AREA]
+        
+        # 过滤掉太小的噪点 (例如只有 1-2 个像素的亮点)
+        if area < 5: 
+            continue
+            
+        # 获取该区域的中心坐标
+        cx, cy = centroids[i]
+        
+        # 获取该区域内的最大亮度 (在原始灰度图上找，而不是二值图)
+        # 创建一个掩码只提取当前光源区域
+        mask = (labels == i).astype(np.uint8)
+        min_val, max_val, _, max_loc = cv2.minMaxLoc(gray, mask=mask)
+        
+        # 计算综合评分：通常太阳是 最亮 且 相对集中
+        # 这里我们主要按 max_intensity 排序，如果亮度一样，按面积排序
+        score = max_val * 1000 + area 
+        
+        light_sources.append({
+            "id": i,
+            "type": "point_light",
+            "score": float(score),
+            "intensity": int(max_val), # 0-255
+            "area": int(area),
+            "pixel_coords": [int(cx), int(cy)],
+            "uv": [round(cx/w, 4), round(cy/h, 4)],
+            # 将 UV 映射到 360 度 (U=0.5 -> 180度)
+            "angle_yaw": round((cx/w) * 360, 2),
+            "angle_pitch": round((cy/h) * 180 - 90, 2) # -90(底) 到 90(顶)
+        })
+    
+    # 按评分降序排列 (最可能是太阳的排第一)
+    light_sources.sort(key=lambda x: x["score"], reverse=True)
+    
+    # 取前 5 个光源 (适应夜景多路灯情况)
+    top_lights = light_sources[:5]
+
+    # ==========================================
+    # Part 2: 网格化缩放地图 (Grid Scale Map)
+    # ==========================================
+    
+    # 配置网格密度
+    # 仅覆盖下半部分 (Ground)
+    GRID_ROWS = 10  # 垂直方向行数 (只取下半截)
+    GRID_COLS = 36  # 水平方向列数 (每10度一个点)
+    
+    scale_points = []
+    
+    # 垂直方向：从 50% (地平线) 到 95% (脚下)
+    # 避免 100% 极点，因为那里贴图扭曲极大
+    row_steps = np.linspace(0.55, 0.95, GRID_ROWS)
+    col_steps = np.linspace(0.0, 1.0, GRID_COLS, endpoint=False) # 0-360度
+    
+    for r_idx, v_ratio in enumerate(row_steps):
+        for c_idx, u_ratio in enumerate(col_steps):
+            
+            px = int(u_ratio * w)
+            py = int(v_ratio * h)
+            
+            # 边界保护
+            px = np.clip(px, 0, w-1)
+            py = np.clip(py, 0, h-1)
+            
+            # --- 深度采样优化 ---
+            # 不要只取单点像素，取 5x5 区域平均值，防止踩到噪点
+            patch_size = 5
+            y1 = max(0, py - patch_size // 2)
+            y2 = min(h, py + patch_size // 2 + 1)
+            x1 = max(0, px - patch_size // 2)
+            x2 = min(w, px + patch_size // 2 + 1)
+            
+            depth_patch = depth_img[y1:y2, x1:x2]
+            avg_depth = np.mean(depth_patch)
+            
+            # --- 缩放算法 ---
+            # 1. 深度基础缩放 (Depth Scale): 越白(255)越近，越大
+            #    公式：(depth / 255) ^ gamma
+            base_scale = (avg_depth / 255.0) ** 1.2
+            
+            # 2. 投影修正 (Projection Correction):
+            #    在等距柱状投影中，越靠近底部，像素被横向拉伸得越厉害。
+            #    为了视觉补偿，通常越靠近底部物体应该稍微“扁/宽”一点，或者整体调大。
+            #    这里做一个简单的线性补偿：越靠下(v接近1)，Scale 适当放大
+            projection_factor = 1.0 + (v_ratio - 0.5) * 0.5 
+            
+            final_scale = base_scale * projection_factor
+            
+            # 限制最小最大值
+            final_scale = np.clip(final_scale, 0.1, 2.5)
+            
+            scale_points.append({
+                "grid_pos": [c_idx, r_idx], # 网格索引，方便前端查找
+                "uv": [round(u_ratio, 4), round(v_ratio, 4)],
+                "depth_val": int(avg_depth),
+                "scale": round(float(final_scale), 3)
+            })
 
     # ==========================
-    # Part 2: 深度/缩放计算工具
+    # Part 3: 输出与可视化
     # ==========================
     
-    # 定义一个内部函数，用于模拟“点击查询”
-    def get_scale_at(u, v, base_scale=1.0):
-        """
-        输入 UV 坐标 (0-1)，返回推荐缩放比例
-        """
-        px = int(u * w)
-        py = int(v * h)
-        # 边界保护
-        px = np.clip(px, 0, w-1)
-        py = np.clip(py, 0, h-1)
-        
-        # 获取深度值 (0-255)
-        d_val = depth_img[py, px]
-        
-        # 缩放算法：
-        # 假设 Depth 255 (最白) 是相机近平面，缩放为 1.0
-        # 假设 Depth 0 (最黑) 是无穷远，缩放为 0.0
-        # 这里的指数 1.0 是线性关系，你可以根据效果调整为 1.2 或 0.8
-        scale_factor = (d_val / 255.0) ** 1.0 
-        
-        # 设置最小缩放，防止物体在远处消失 (例如最小 0.1 倍)
-        scale_factor = max(scale_factor, 0.1)
-        
-        return scale_factor * base_scale, d_val
-
-    # ==========================
-    # Part 3: 生成 JSON 数据
-    # ==========================
-    
-    scene_data = {
-        "scene_name": os.path.basename(rgb_path),
-        "resolution": [w, h],
-        "lighting": {
-            "sun_position": {
-                "pixel": [int(sun_x), int(sun_y)],
-                "uv": [round(sun_x/w, 4), round(sun_y/h, 4)],
-                # 将 UV 映射到 Unity Skybox Rotation (0-360度)
-                # Unity Skybox 旋转通常对应 U 轴
-                "rotation_angle": round((sun_x/w) * 360, 2)
-            },
-            "sun_intensity_estimate": round(max_val / 255.0, 2),
-            "ambient_color_rgb": ambient_rgb
-        },
-        # 预计算几个参考点的缩放比例 (例如地面、中间、天空)
-        "reference_scales": {
-            "center": get_scale_at(0.5, 0.5)[0],
-            "bottom_ground": get_scale_at(0.5, 0.8)[0], # 通常放置 Avatar 的位置
-        }
-    }
-
-    # ==========================
-    # 可视化输出 (Optional)
-    # ==========================
-    # 在图上画个圈标记太阳
+    # 绘制 Debug 图片
     debug_img = rgb_img.copy()
-    cv2.circle(debug_img, (sun_x, sun_y), 50, (0, 0, 255), 5)
-    cv2.putText(debug_img, "SUN", (sun_x+60, sun_y), cv2.FONT_HERSHEY_SIMPLEX, 2, (0, 0, 255), 3)
     
+    # 1. 画光源
+    for i, light in enumerate(top_lights):
+        cx, cy = light["pixel_coords"]
+        # 第一名(太阳)用粗绿色圈，其他用细黄色圈
+        color = (0, 255, 0) if i == 0 else (0, 255, 255) 
+        thickness = 5 if i == 0 else 2
+        radius = int(np.sqrt(light["area"])) + 20
+        
+        cv2.circle(debug_img, (cx, cy), radius, color, thickness)
+        cv2.putText(debug_img, f"Light {i+1}", (cx+radius, cy), 
+                   cv2.FONT_HERSHEY_SIMPLEX, 1, color, 2)
+
+    # 2. 画缩放网格点
+    for pt in scale_points:
+        u, v = pt["uv"]
+        px, py = int(u * w), int(v * h)
+        scale = pt["scale"]
+        
+        # 用圆圈大小代表 scale 大小
+        circle_r = int(scale * 10) 
+        cv2.circle(debug_img, (px, py), 3, (0, 0, 255), -1) # 红点是位置
+        cv2.circle(debug_img, (px, py), circle_r, (255, 0, 0), 1) # 蓝圈是建议大小
+
     # 保存
     if not os.path.exists(output_dir):
         os.makedirs(output_dir)
         
-    json_path = os.path.join(output_dir, "scene_meta.json")
-    vis_path = os.path.join(output_dir, "scene_debug.jpg")
+    json_path = os.path.join(output_dir, "scene_meta_v2.json")
+    vis_path = os.path.join(output_dir, "scene_debug_v2.jpg")
+    
+    output_data = {
+        "scene_name": os.path.basename(rgb_path),
+        "resolution": [w, h],
+        "lights": top_lights,
+        "nav_mesh": {
+            "type": "grid",
+            "rows": GRID_ROWS,
+            "cols": GRID_COLS,
+            "points": scale_points
+        }
+    }
     
     with open(json_path, 'w') as f:
-        json.dump(scene_data, f, indent=4)
+        json.dump(output_data, f, indent=4)
         
     cv2.imwrite(vis_path, debug_img)
     
-    print(f"✅ JSON Saved: {json_path}")
-    print(f"✅ Debug Image: {vis_path}")
-    
-    # 打印测试：假设我们在地面放置 Avatar (UV: 0.5, 0.75)
-    test_u, test_v = 0.5, 0.75
-    scale, d_val = get_scale_at(test_u, test_v)
-    print(f"\n🎯 Avatar Placement Test at UV({test_u}, {test_v}):")
-    print(f"   - Depth Value: {d_val}/255")
-    print(f"   - Rec. Scale : {scale:.2f}x (Based on depth)")
+    print(f"✅ Analysis Complete.")
+    print(f"   - Found {len(top_lights)} lights.")
+    print(f"   - Generated {len(scale_points)} scale points.")
+    print(f"   - JSON: {json_path}")
+    print(f"   - Debug Img: {vis_path}")
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument('--rgb', required=True, help='Path to RGB panorama')
-    parser.add_argument('--depth', required=True, help='Path to Depth panorama')
-    parser.add_argument('--out', default='./out', help='Output directory')
-    
+    parser.add_argument('--rgb', required=True)
+    parser.add_argument('--depth', required=True)
+    parser.add_argument('--out', default='./out')
     args = parser.parse_args()
-    analyze_scene(args.rgb, args.depth, args.out)
+    
+    analyze_scene_advanced(args.rgb, args.depth, args.out)
