@@ -1,0 +1,540 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>360 Real-time Algo Tuner</title>
+    <script src="https://unpkg.com/vue@3/dist/vue.global.js"></script>
+    <link
+      rel="stylesheet"
+      href="https://cdn.jsdelivr.net/npm/pannellum@2.5.6/build/pannellum.css"
+    />
+    <script
+      type="text/javascript"
+      src="https://cdn.jsdelivr.net/npm/pannellum@2.5.6/build/pannellum.js"
+    ></script>
+
+    <style>
+      body,
+      html {
+        margin: 0;
+        padding: 0;
+        height: 100%;
+        overflow: hidden;
+        font-family: sans-serif;
+        background: #1a1a1a;
+        color: #ddd;
+      }
+      #app {
+        width: 100%;
+        height: 100%;
+        position: relative;
+      }
+
+      /* 1. 360 Viewer */
+      #panorama {
+        width: 100%;
+        height: 100%;
+        z-index: 1;
+      }
+
+      /* 2. Character Layer */
+      .character-layer {
+        position: absolute;
+        top: 0;
+        left: 0;
+        width: 100%;
+        height: 100%;
+        z-index: 10;
+        pointer-events: none;
+      }
+      .avatar-container {
+        position: absolute;
+        transform-origin: bottom center; /* 关键：脚底缩放 */
+        cursor: grab;
+        pointer-events: auto;
+        user-select: none;
+        display: flex;
+        justify-content: center;
+        align-items: flex-end;
+        border: 1px dashed rgba(255, 255, 255, 0.3);
+      }
+      .avatar-container:active {
+        cursor: grabbing;
+        border-color: #0f0;
+      }
+      .avatar-img {
+        width: 100%;
+        height: auto;
+        display: block;
+        pointer-events: none;
+      }
+
+      /* 3. Crosshair */
+      .crosshair {
+        position: absolute;
+        width: 10px;
+        height: 10px;
+        background: #f00;
+        border: 2px solid #fff;
+        border-radius: 50%;
+        transform: translate(-50%, -50%);
+        pointer-events: none;
+        z-index: 20;
+        box-shadow: 0 0 5px rgba(0, 0, 0, 0.5);
+      }
+
+      /* 4. Control Panel */
+      .controls {
+        position: absolute;
+        top: 10px;
+        right: 10px;
+        width: 340px;
+        background: rgba(0, 0, 0, 0.85);
+        padding: 15px;
+        border-radius: 8px;
+        z-index: 100;
+        max-height: 90vh;
+        overflow-y: auto;
+        box-shadow: -5px 0 15px rgba(0, 0, 0, 0.5);
+      }
+      h3 {
+        margin: 0 0 10px 0;
+        color: #3498db;
+        font-size: 16px;
+        border-bottom: 1px solid #444;
+        padding-bottom: 5px;
+      }
+      .group {
+        margin-bottom: 15px;
+        background: rgba(255, 255, 255, 0.05);
+        padding: 10px;
+        border-radius: 4px;
+      }
+      .row {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        margin-bottom: 8px;
+        font-size: 12px;
+      }
+      .slider-row {
+        display: flex;
+        flex-direction: column;
+        margin-bottom: 8px;
+      }
+      .slider-header {
+        display: flex;
+        justify-content: space-between;
+        font-size: 12px;
+        margin-bottom: 2px;
+        color: #aaa;
+      }
+      input[type="range"] {
+        width: 100%;
+        cursor: pointer;
+      }
+      input[type="file"] {
+        width: 100%;
+        font-size: 11px;
+        margin-bottom: 4px;
+      }
+      .val {
+        color: #0f0;
+        font-family: monospace;
+        font-weight: bold;
+      }
+      .debug-canvas {
+        display: none;
+      } /* 隐藏用于采样的 Canvas */
+
+      /* 深度图预览小窗口 */
+      .depth-preview {
+        width: 100%;
+        height: 60px;
+        background: #000;
+        margin-top: 5px;
+        position: relative;
+        border: 1px solid #444;
+        overflow: hidden;
+      }
+      .depth-preview img {
+        width: 100%;
+        height: 100%;
+        object-fit: cover;
+        opacity: 0.5;
+      }
+      .depth-dot {
+        position: absolute;
+        width: 6px;
+        height: 6px;
+        background: #f00;
+        border-radius: 50%;
+        transform: translate(-50%, -50%);
+        top: 0;
+        left: 0;
+      }
+    </style>
+  </head>
+  <body>
+    <div id="app">
+      <canvas ref="depthCanvas" class="debug-canvas"></canvas>
+
+      <div id="panorama"></div>
+
+      <div class="character-layer" v-if="charImgSrc">
+        <div
+          class="avatar-container"
+          :style="{ 
+                 left: charPos.x + 'px', top: charPos.y + 'px',
+                 width: params.baseWidth + 'px',
+                 transform: `translate(-50%, -100%) scale(${currentScale})` 
+             }"
+          @mousedown.stop.prevent="startDrag"
+        >
+          <img :src="charImgSrc" class="avatar-img" />
+        </div>
+        <div
+          class="crosshair"
+          :style="{ left: charPos.x + 'px', top: charPos.y + 'px' }"
+        ></div>
+      </div>
+
+      <div class="controls">
+        <h3>🎛️ Real-time Algo Tuner</h3>
+
+        <div class="group">
+          <div class="slider-header">1. Panorama (JPG)</div>
+          <input
+            type="file"
+            accept="image/*"
+            @change="e => loadFile(e, 'bg')"
+          />
+          <div class="slider-header">2. Depth Map (PNG/JPG)</div>
+          <input
+            type="file"
+            accept="image/*"
+            @change="e => loadFile(e, 'depth')"
+          />
+          <div class="slider-header">3. Character (PNG)</div>
+          <input
+            type="file"
+            accept="image/*"
+            @change="e => loadFile(e, 'char')"
+          />
+        </div>
+
+        <div class="group">
+          <div class="row">
+            <span>Scale:</span
+            ><span class="val">{{ currentScale.toFixed(3) }}</span>
+          </div>
+          <div class="row">
+            <span>Depth (0-255):</span
+            ><span class="val">{{ currentDepthVal }}</span>
+          </div>
+          <div class="row">
+            <span>UV:</span
+            ><span class="val"
+              >U:{{ currentUV.u.toFixed(2) }} V:{{ currentUV.v.toFixed(2)
+              }}</span
+            >
+          </div>
+
+          <div class="depth-preview" v-if="depthImgSrc">
+            <img :src="depthImgSrc" />
+            <div
+              class="depth-dot"
+              :style="{ left: (currentUV.u * 100) + '%', top: (currentUV.v * 100) + '%' }"
+            ></div>
+          </div>
+        </div>
+
+        <div class="group">
+          <h3>📐 Algorithm Params</h3>
+
+          <div class="slider-row">
+            <div class="slider-header">
+              <span>Geo Gamma (Curve)</span>
+              <span class="val">{{ params.geoGamma }}</span>
+            </div>
+            <input
+              type="range"
+              v-model.number="params.geoGamma"
+              min="0.1"
+              max="2.0"
+              step="0.05"
+            />
+            <div style="font-size: 10px; color: #888">
+              低值=压平曲线(远近差异小)，高值=陡峭
+            </div>
+          </div>
+
+          <div class="slider-row">
+            <div class="slider-header">
+              <span>Geo Weight</span>
+              <span class="val">{{ params.geoWeight.toFixed(1) }}</span>
+            </div>
+            <input
+              type="range"
+              v-model.number="params.geoWeight"
+              min="0.0"
+              max="1.0"
+              step="0.1"
+            />
+          </div>
+
+          <div class="slider-row">
+            <div class="slider-header">
+              <span>Depth Weight</span>
+              <span class="val">{{ (1.0 - params.geoWeight).toFixed(1) }}</span>
+            </div>
+            <div style="font-size: 10px; color: #888; text-align: right">
+              Auto calculated (1 - Geo)
+            </div>
+          </div>
+
+          <div class="slider-row">
+            <div class="slider-header">
+              <span>Global Scale</span>
+              <span class="val">{{ params.globalScale }}</span>
+            </div>
+            <input
+              type="range"
+              v-model.number="params.globalScale"
+              min="1.0"
+              max="10.0"
+              step="0.1"
+            />
+          </div>
+
+          <div class="slider-row">
+            <div class="slider-header">
+              <span>Char Base Width (px)</span>
+              <span class="val">{{ params.baseWidth }}</span>
+            </div>
+            <input
+              type="range"
+              v-model.number="params.baseWidth"
+              min="50"
+              max="400"
+              step="10"
+            />
+          </div>
+        </div>
+
+        <button
+          @click="resetParams"
+          style="
+            width: 100%;
+            padding: 8px;
+            background: #444;
+            color: #fff;
+            border: none;
+            cursor: pointer;
+            border-radius: 4px;
+          "
+        >
+          Reset Defaults
+        </button>
+      </div>
+    </div>
+
+    <script>
+      const { createApp, ref, reactive, onMounted, onUnmounted, watch } = Vue;
+
+      createApp({
+        setup() {
+          // Refs
+          const viewer = ref(null);
+          const depthCanvas = ref(null);
+          const depthCtx = ref(null);
+
+          // Assets
+          const bgSrc = ref(null);
+          const depthImgSrc = ref(null);
+          const charImgSrc = ref(null);
+
+          // State
+          const charPos = reactive({
+            x: window.innerWidth / 2,
+            y: window.innerHeight * 0.8,
+          });
+          const isDragging = ref(false);
+          const currentScale = ref(1.0);
+          const currentDepthVal = ref(0);
+          const currentUV = reactive({ u: 0, v: 0 });
+
+          // 🔥 Tunable Parameters (绑定到滑块)
+          const params = reactive({
+            geoGamma: 0.6, // 几何曲线的压平程度 (你的痛点)
+            geoWeight: 0.8, // 几何权重 (0.8 = 80% 信任 tan, 20% 信任 Depth)
+            globalScale: 5.5, // 全局放大倍数
+            baseWidth: 150, // 角色基础像素宽度
+          });
+
+          const resetParams = () => {
+            params.geoGamma = 0.6;
+            params.geoWeight = 0.8;
+            params.globalScale = 5.5;
+            params.baseWidth = 150;
+            updateCalculation();
+          };
+
+          // --- 1. Load Files ---
+          const loadFile = (event, type) => {
+            const file = event.target.files[0];
+            if (!file) return;
+            const reader = new FileReader();
+            reader.onload = (e) => {
+              const res = e.target.result;
+              if (type === "bg") initViewer(res);
+              else if (type === "char") charImgSrc.value = res;
+              else if (type === "depth") {
+                depthImgSrc.value = res;
+                initDepthCanvas(res);
+              }
+            };
+            reader.readAsDataURL(file);
+          };
+
+          // --- 2. Depth Canvas Handling ---
+          const initDepthCanvas = (src) => {
+            const img = new Image();
+            img.onload = () => {
+              const cvs = depthCanvas.value;
+              // 为了性能，不需要绘制 8K，缩小到 1024 足够采样了
+              cvs.width = 1024;
+              cvs.height = 512;
+              const ctx = cvs.getContext("2d", { willReadFrequently: true });
+              ctx.drawImage(img, 0, 0, cvs.width, cvs.height);
+              depthCtx.value = ctx;
+              updateCalculation(); // 重新计算
+            };
+            img.src = src;
+          };
+
+          // --- 3. Viewer Init ---
+          const initViewer = (src) => {
+            if (viewer.value) viewer.value.destroy();
+            viewer.value = pannellum.viewer("panorama", {
+              type: "equirectangular",
+              panorama: src,
+              autoLoad: true,
+              compass: false,
+              showZoomCtrl: false,
+              mouseZoom: false,
+              pitch: -20,
+            });
+            viewer.value.on("animate", updateCalculation);
+            viewer.value.on("mouseup", updateCalculation);
+          };
+
+          // --- 4. Drag Logic ---
+          const startDrag = () => (isDragging.value = true);
+          const stopDrag = () => (isDragging.value = false);
+          const handleDrag = (e) => {
+            if (!isDragging.value) return;
+            charPos.x = e.clientX;
+            charPos.y = e.clientY;
+            updateCalculation();
+          };
+
+          onMounted(() => {
+            window.addEventListener("mousemove", handleDrag);
+            window.addEventListener("mouseup", stopDrag);
+          });
+          onUnmounted(() => {
+            window.removeEventListener("mousemove", handleDrag);
+            window.removeEventListener("mouseup", stopDrag);
+          });
+
+          // --- 5. 🔥 The Algorithm (JS Implementation) ---
+          const updateCalculation = () => {
+            if (!viewer.value) return;
+
+            // A. Screen -> Spherical -> UV
+            const mockEvent = {
+              clientX: charPos.x,
+              clientY: charPos.y,
+              target: viewer.value.getContainer(),
+            };
+            const coords = viewer.value.mouseEventToCoords(mockEvent);
+            if (!coords || coords.length < 2) return;
+
+            const pitch = coords[0];
+            const yaw = coords[1];
+
+            let u = (yaw + 180) / 360.0;
+            let v = (90 - pitch) / 180.0;
+
+            u = u % 1.0;
+            if (u < 0) u += 1.0;
+            v = Math.max(0, Math.min(1, v));
+
+            currentUV.u = u;
+            currentUV.v = v;
+
+            // B. Read Depth Pixel
+            let depthVal = 128; // Default grey
+            if (depthCtx.value) {
+              const cvs = depthCanvas.value;
+              const px = Math.floor(u * cvs.width);
+              const py = Math.floor(v * cvs.height);
+              // Get Pixel Data (R, G, B, A)
+              const pixel = depthCtx.value.getImageData(px, py, 1, 1).data;
+              depthVal = pixel[0]; // Take Red channel as grayscale
+            }
+            currentDepthVal.value = depthVal;
+
+            // C. Calculate Scale (The Algorithm)
+
+            // 1. Geometric Factor (Tan + Gamma)
+            // v=0.5 (Horizon), v=1.0 (Feet)
+            const v_clamped = Math.max(v, 0.52);
+            const raw_tan = Math.tan((v_clamped - 0.5) * Math.PI);
+
+            // Apply Gamma (Slider Control)
+            const geometric_factor = Math.pow(raw_tan, params.geoGamma);
+
+            // 2. Depth Factor
+            const d_norm = depthVal / 255.0;
+
+            // 3. Mixing (Slider Control)
+            const depth_weight = 1.0 - params.geoWeight;
+            const mixed_scale =
+              geometric_factor * (params.geoWeight + depth_weight * d_norm);
+
+            // 4. Global Scaling
+            let final = mixed_scale * params.globalScale;
+
+            // Clamp
+            final = Math.max(0.1, Math.min(final, 10.0));
+
+            currentScale.value = final;
+          };
+
+          // Watch params change to update realtime
+          watch(params, () => {
+            updateCalculation();
+          });
+
+          return {
+            loadFile,
+            bgSrc,
+            depthImgSrc,
+            charImgSrc,
+            depthCanvas,
+            charPos,
+            startDrag,
+            currentScale,
+            currentDepthVal,
+            currentUV,
+            params,
+            resetParams,
+          };
+        },
+      }).mount("#app");
+    </script>
+  </body>
+</html>
