@@ -75,7 +75,9 @@ def extract_and_process(video_path, frame_index, output_dir, encoder):
     # 4. 深度推理
     # 注意：这里我们传入已经缩小的图片，input_size 参数可以省略或保持一致
     with torch.no_grad():
-        depth = depth_model.infer_image(resized_padded_frame, input_size=infer_width)
+        # 【关键修改】：这里必须传 infer_height (较小的那个边)，
+        # 否则模型会试图把高度拉伸到 1024，导致显存爆炸。
+        depth = depth_model.infer_image(resized_padded_frame, input_size=infer_height)
 
     # 5. 后处理与裁切
     # [步骤 B] 恢复尺寸 (Upscale back)
