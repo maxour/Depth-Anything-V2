@@ -109,8 +109,8 @@ def analyze_scene_advanced(rgb_path, depth_path, output_dir):
             py = int(v_ratio * h)
             
             # 边界保护
-            px = np.clip(px, 0, w-1)
-            py = np.clip(py, 0, h-1)
+            px = int(np.clip(px, 0, w-1))
+            py = int(np.clip(py, 0, h-1))
             
             # --- 深度采样优化 ---
             # 不要只取单点像素，取 5x5 区域平均值，防止踩到噪点
