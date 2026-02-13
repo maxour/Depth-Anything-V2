@@ -121,27 +121,30 @@ def analyze_scene_advanced(rgb_path, depth_path, output_dir):
             x2 = min(w, px + patch_size // 2 + 1)
             
             depth_patch = depth_img[y1:y2, x1:x2]
+            if depth_patch.size == 0: continue
             avg_depth = np.mean(depth_patch)
             
             # --- 缩放算法 ---
             # 1. 深度基础缩放 (Depth Scale): 越白(255)越近，越大
             #    公式：(depth / 255) ^ gamma
-            base_scale = (avg_depth / 255.0) ** 1.2
+            # 假设: Depth 255 (最近) -> Scale 2.5
+            #       Depth 50  (远)   -> Scale 0.3
+            # 你可以调节 gamma 指数来控制衰减速度
+            base_scale = (avg_depth / 255.0) ** 1.0
             
             # 2. 投影修正 (Projection Correction):
             #    在等距柱状投影中，越靠近底部，像素被横向拉伸得越厉害。
             #    为了视觉补偿，通常越靠近底部物体应该稍微“扁/宽”一点，或者整体调大。
             #    这里做一个简单的线性补偿：越靠下(v接近1)，Scale 适当放大
-            projection_factor = 1.0 + (v_ratio - 0.5) * 0.5 
+            projection_factor = 1.0 + (v_ratio - 0.5) * 0.8
             
-            final_scale = base_scale * projection_factor
-            
-            # 限制最小最大值
-            final_scale = np.clip(final_scale, 0.1, 2.5)
+            final_scale = base_scale * projection_factor * 2.5 # 乘一个系数让整体数值好看
+            final_scale = np.clip(final_scale, 0.1, 5.0) # 限制范围
             
             scale_points.append({
                 "grid_pos": [c_idx, r_idx], # 网格索引，方便前端查找
                 "uv": [round(u_ratio, 4), round(v_ratio, 4)],
+                "pixel": [px, py],
                 "depth_val": int(avg_depth),
                 "scale": round(float(final_scale), 3)
             })
