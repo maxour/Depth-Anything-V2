@@ -121,25 +121,45 @@ def analyze_scene_advanced(rgb_path, depth_path, output_dir):
             x2 = min(w, px + patch_size // 2 + 1)
             
             depth_patch = depth_img[y1:y2, x1:x2]
-            if depth_patch.size == 0: continue
             avg_depth = np.mean(depth_patch)
+
+            # ==========================================
+            # 🚀 核心修正：基于全景透视的几何计算
+            # ==========================================
             
-            # --- 缩放算法 ---
-            # 1. 深度基础缩放 (Depth Scale): 越白(255)越近，越大
-            #    公式：(depth / 255) ^ gamma
-            # 假设: Depth 255 (最近) -> Scale 2.5
-            #       Depth 50  (远)   -> Scale 0.3
-            # 你可以调节 gamma 指数来控制衰减速度
-            base_scale = (avg_depth / 255.0) ** 1.0
+            # 1. 几何对地距离估算 (Geometric Ground Scale)
+            # 全景图中，V=0.5 是地平线(无穷远)，V=1.0 是脚下(最近)
+            # 角度 alpha = (v - 0.5) * PI (从地平线向下看的角度)
+            # 物理距离 D = CameraHeight / tan(alpha)
+            # 缩放比例 Scale ∝ 1 / D ∝ tan(alpha)
             
-            # 2. 投影修正 (Projection Correction):
-            #    在等距柱状投影中，越靠近底部，像素被横向拉伸得越厉害。
-            #    为了视觉补偿，通常越靠近底部物体应该稍微“扁/宽”一点，或者整体调大。
-            #    这里做一个简单的线性补偿：越靠下(v接近1)，Scale 适当放大
-            projection_factor = 1.0 + (v_ratio - 0.5) * 0.8
+            # 为了防止 V=0.5 时 tan(0)=0 导致消失，我们设置一个最小角度偏移
+            v_clamped = max(v_ratio, 0.52) # 0.52 约等于向下看 3.6度，保证远处不为0
             
-            final_scale = base_scale * projection_factor * 2.5 # 乘一个系数让整体数值好看
-            final_scale = np.clip(final_scale, 0.1, 5.0) # 限制范围
+            # 计算正切值 (这就是符合物理的近大远小曲线)
+            # 越靠近 1.0，tan 值增长越快
+            geometric_factor = np.tan((v_clamped - 0.5) * np.pi)
+            
+            # 2. 深度图修正 (AI Depth Correction)
+            # 我们主要信任几何计算，但是如果深度图显示这里突然变黑(变远)或变白(障碍物)
+            # 我们用深度图做一个微调系数。
+            # 归一化深度 (0.0 - 1.0)
+            d_norm = avg_depth / 255.0
+            
+            # 混合策略：
+            # 基础 Scale 完全由几何位置决定 (解决近处反而小的问题)
+            # 深度图只负责微调 (比如雪地里有个坑，AI看出来了，深度变小，Scale略微变小)
+            # 这里给几何权重 80%，AI 深度权重 20%
+            
+            # 经验系数：调节 global_scale_mult 让整体大小合适
+            global_scale_mult = 3.5 
+            
+            # 最终公式：Scale = 几何曲线 * (0.5 + 0.5 * AI深度) * 全局系数
+            # 这样即使 AI 在底部判断失误，几何曲线也能强制把 Scale 拉大
+            final_scale = geometric_factor * (0.5 + 0.5 * d_norm) * global_scale_mult
+            
+            # 3. 限制极值 (防止脚底下无限大)
+            final_scale = np.clip(final_scale, 0.1, 8.0)
             
             scale_points.append({
                 "grid_pos": [c_idx, r_idx], # 网格索引，方便前端查找
