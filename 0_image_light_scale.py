@@ -124,42 +124,40 @@ def analyze_scene_advanced(rgb_path, depth_path, output_dir):
             avg_depth = np.mean(depth_patch)
 
             # ==========================================
-            # 🚀 核心修正：基于全景透视的几何计算
+            # 🚀 算法修正 v3：平滑曲线 + 鲁棒性增强
             # ==========================================
+            # 如果觉得“中间的角色”还是比“旁边的角色”大太多：👉 调小 Gamma 指数 (** 0.6 -> ** 0.5 或 0.45)
+            # 如果觉得“整体都太小”或“整体都太大”：👉 调整全局系数 (global_scale_mult = 5.5 -> 6.0 或 4.5)
+            # 如果觉得“右侧明明很亮（看起来很近），但 Scale 很小”（被深度图坑了）：👉 继续降低深度权重 (0.8 + 0.2 -> 0.9 + 0.1)
             
-            # 1. 几何对地距离估算 (Geometric Ground Scale)
-            # 全景图中，V=0.5 是地平线(无穷远)，V=1.0 是脚下(最近)
-            # 角度 alpha = (v - 0.5) * PI (从地平线向下看的角度)
-            # 物理距离 D = CameraHeight / tan(alpha)
-            # 缩放比例 Scale ∝ 1 / D ∝ tan(alpha)
+            # 1. 几何计算 (Geometric): 引入 Gamma 修正
+            # 目的：抑制 tan 函数在底部的过激增长，提升侧面(中远距离)的权重
+            v_clamped = max(v_ratio, 0.52)
+            raw_tan = np.tan((v_clamped - 0.5) * np.pi)
             
-            # 为了防止 V=0.5 时 tan(0)=0 导致消失，我们设置一个最小角度偏移
-            v_clamped = max(v_ratio, 0.52) # 0.52 约等于向下看 3.6度，保证远处不为0
+            # 【关键修改 A】Gamma 压缩
+            # power < 1.0 (如0.6) 会让数值间的差距变小（压平曲线）
+            # 这样 Middle(近) 和 Right(稍远) 的 Scale 差距就不会那么大
+            geometric_factor = raw_tan ** 0.6 
             
-            # 计算正切值 (这就是符合物理的近大远小曲线)
-            # 越靠近 1.0，tan 值增长越快
-            geometric_factor = np.tan((v_clamped - 0.5) * np.pi)
-            
-            # 2. 深度图修正 (AI Depth Correction)
-            # 我们主要信任几何计算，但是如果深度图显示这里突然变黑(变远)或变白(障碍物)
-            # 我们用深度图做一个微调系数。
-            # 归一化深度 (0.0 - 1.0)
+            # 2. 深度图修正 (Depth): 降低权重
+            # Depth Anything 在全景图两侧边缘往往偏黑(数值偏小)，导致误判为过远
             d_norm = avg_depth / 255.0
             
-            # 混合策略：
-            # 基础 Scale 完全由几何位置决定 (解决近处反而小的问题)
-            # 深度图只负责微调 (比如雪地里有个坑，AI看出来了，深度变小，Scale略微变小)
-            # 这里给几何权重 80%，AI 深度权重 20%
+            # 【关键修改 B】调整混合权重
+            # 之前是 0.5/0.5。现在改为 几何(0.8) / 深度(0.2)
+            # 我们主要信任几何位置，深度图仅作为微量的纹理参考
+            mixed_scale = geometric_factor * (0.8 + 0.2 * d_norm)
             
-            # 经验系数：调节 global_scale_mult 让整体大小合适
-            global_scale_mult = 3.5 
+            # 【关键修改 C】全局系数补偿
+            # 因为 geometric_factor 被 **0.6 压缩变小了，
+            # 我们需要把 global_scale_mult 调大，把整体尺寸拉回正常水平
+            global_scale_mult = 5.5 
             
-            # 最终公式：Scale = 几何曲线 * (0.5 + 0.5 * AI深度) * 全局系数
-            # 这样即使 AI 在底部判断失误，几何曲线也能强制把 Scale 拉大
-            final_scale = geometric_factor * (0.5 + 0.5 * d_norm) * global_scale_mult
+            final_scale = mixed_scale * global_scale_mult
             
-            # 3. 限制极值 (防止脚底下无限大)
-            final_scale = np.clip(final_scale, 0.1, 8.0)
+            # 3. 限制极值
+            final_scale = np.clip(final_scale, 0.1, 10.0)
             
             scale_points.append({
                 "grid_pos": [c_idx, r_idx], # 网格索引，方便前端查找

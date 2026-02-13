@@ -3,7 +3,7 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>360 Avatar Scale Debugger</title>
+    <title>360 Avatar Drag & Scale</title>
     <script src="https://unpkg.com/vue@3/dist/vue.global.js"></script>
     <link
       rel="stylesheet"
@@ -30,14 +30,14 @@
         position: relative;
       }
 
-      /* 1. 360 播放器层 (底层) */
+      /* 1. 360 播放器层 */
       #panorama {
         width: 100%;
         height: 100%;
         z-index: 1;
       }
 
-      /* 2. Character 层 (中间交互层) */
+      /* 2. Character 层 */
       .character-layer {
         position: absolute;
         top: 0;
@@ -45,188 +45,149 @@
         width: 100%;
         height: 100%;
         z-index: 10;
-        pointer-events: none; /* 让鼠标事件穿透到下面的播放器，除非点中 character */
+        pointer-events: none; /* 让鼠标穿透空白区域 */
       }
 
       .avatar-container {
         position: absolute;
-        transform-origin: bottom center; /* 缩放中心在脚底 */
+        transform-origin: bottom center; /* 关键：缩放中心在脚底 */
         cursor: grab;
-        pointer-events: auto; /* 允许拖拽 */
+        pointer-events: auto; /* 允许捕获鼠标事件 */
         user-select: none;
-        border: 2px dashed rgba(255, 255, 0, 0.5); /* 调试辅助框 */
+        /* 虚线框方便调试，实际使用可去掉 */
+        border: 2px dashed rgba(255, 255, 0, 0.3);
+        display: flex;
+        justify-content: center;
+        align-items: flex-end;
       }
-      .avatar-container:active {
+      .avatar-container.dragging {
         cursor: grabbing;
-        border-color: yellow;
+        border-color: #00ff00;
       }
       .avatar-img {
         width: 100%;
-        height: 100%;
+        height: auto;
         display: block;
         pointer-events: none;
       }
 
-      /* 3. UI 控制面板 (顶层) */
+      /* 3. UI 控制面板 */
       .controls {
         position: absolute;
         top: 10px;
         left: 10px;
-        width: 320px;
-        background: rgba(0, 0, 0, 0.85);
-        color: #eee;
+        width: 300px;
+        background: rgba(0, 0, 0, 0.8);
+        color: #fff;
         padding: 15px;
         border-radius: 8px;
         z-index: 100;
-        box-shadow: 0 4px 15px rgba(0, 0, 0, 0.5);
-      }
-      .section {
-        margin-bottom: 15px;
-        border-bottom: 1px solid #444;
-        padding-bottom: 10px;
       }
       .row {
+        margin-bottom: 8px;
+        font-size: 13px;
         display: flex;
         justify-content: space-between;
-        align-items: center;
-        margin-bottom: 5px;
       }
-      h3 {
-        margin: 0 0 10px 0;
-        color: #3498db;
-      }
-      label {
-        font-size: 12px;
-        color: #aaa;
-        display: block;
-        margin-bottom: 2px;
+      .val {
+        color: #0f0;
+        font-family: monospace;
       }
       input[type="file"] {
-        font-size: 11px;
         width: 100%;
+        font-size: 11px;
         margin-bottom: 5px;
       }
-      .info-val {
-        color: #00ff00;
-        font-family: monospace;
-        font-weight: bold;
-      }
-      .base-scale-slider {
-        width: 100%;
-      }
 
-      /* 准星辅助 */
+      /* 准星 */
       .crosshair {
         position: absolute;
-        top: 0;
-        left: 0;
-        width: 10px;
-        height: 10px;
+        width: 8px;
+        height: 8px;
         background: red;
         border-radius: 50%;
         transform: translate(-50%, -50%);
         pointer-events: none;
         z-index: 20;
-        display: none;
       }
     </style>
   </head>
   <body>
-    <div id="app" @mousemove="onMouseMove" @mouseup="onMouseUp">
+    <div id="app">
       <div id="panorama"></div>
 
       <div class="character-layer" v-if="charImgSrc">
         <div
           class="avatar-container"
+          :class="{ dragging: isDragging }"
           :style="{ 
                  left: charPos.x + 'px', 
                  top: charPos.y + 'px',
                  width: baseWidth + 'px',
                  transform: `translate(-50%, -100%) scale(${currentScale})` 
              }"
-          @mousedown.stop="onMouseDown"
+          @mousedown.stop.prevent="startDrag"
         >
           <img :src="charImgSrc" class="avatar-img" />
         </div>
         <div
           class="crosshair"
-          :style="{ left: charPos.x + 'px', top: charPos.y + 'px', display: 'block' }"
+          :style="{ left: charPos.x + 'px', top: charPos.y + 'px' }"
         ></div>
       </div>
 
       <div class="controls">
-        <h3>🏗️ Avatar Scene Debugger</h3>
+        <h3>🔧 Scene Debugger</h3>
+        <input type="file" accept="image/*" @change="e => loadFile(e, 'bg')" />
+        <div style="font-size: 10px; color: #aaa">1. Load Panorama (JPG)</div>
+        <br />
+        <input
+          type="file"
+          accept="application/json"
+          @change="e => loadFile(e, 'json')"
+        />
+        <div style="font-size: 10px; color: #aaa">2. Load Meta JSON</div>
+        <br />
+        <input
+          type="file"
+          accept="image/*"
+          @change="e => loadFile(e, 'char')"
+        />
+        <div style="font-size: 10px; color: #aaa">3. Load Character (PNG)</div>
 
-        <div class="section">
-          <label>1. 背景全景图 (JPG)</label>
-          <input
-            type="file"
-            accept="image/*"
-            @change="e => loadFile(e, 'bg')"
-          />
+        <hr style="border-color: #444" />
 
-          <label>2. 场景数据 (JSON)</label>
-          <input
-            type="file"
-            accept="application/json"
-            @change="e => loadFile(e, 'json')"
-          />
-
-          <label>3. 角色图片 (PNG)</label>
-          <input
-            type="file"
-            accept="image/*"
-            @change="e => loadFile(e, 'char')"
-          />
-        </div>
-
-        <div class="section" v-if="navMesh">
+        <div v-if="navMesh">
           <div class="row">
-            <span>Current Scale:</span>
-            <span class="info-val">{{ currentScale.toFixed(3) }}</span>
+            <span>Scale:</span
+            ><span class="val">{{ currentScale.toFixed(3) }}</span>
           </div>
           <div class="row">
-            <span>Grid Depth:</span>
-            <span class="info-val">{{ currentDepthVal }}</span>
+            <span>Depth:</span><span class="val">{{ currentDepthVal }}</span>
           </div>
           <div class="row">
-            <span>UV Coordinate:</span>
-            <span style="font-size: 10px"
-              >U:{{ currentUV.u.toFixed(3) }} V:{{ currentUV.v.toFixed(3)
-              }}</span
-            >
+            <span>Base Size:</span
+            ><input
+              type="range"
+              v-model.number="baseWidth"
+              min="50"
+              max="400"
+            />
           </div>
         </div>
-
-        <div class="section">
-          <label>Avatar 基础大小 (px): {{ baseWidth }}</label>
-          <input
-            type="range"
-            v-model.number="baseWidth"
-            min="50"
-            max="500"
-            class="base-scale-slider"
-          />
-          <small style="color: #666">调整此值以匹配设计稿原始尺寸</small>
-        </div>
-
-        <div style="font-size: 10px; color: #666">
-          操作：拖拽人物移动。<br />
-          注意：Scale 计算基于脚底红点位置。
+        <div v-else style="color: yellow; font-size: 12px">
+          ⚠️ Please load JSON to enable scaling
         </div>
       </div>
     </div>
 
     <script>
-      const { createApp, ref, reactive, onMounted, computed } = Vue;
+      const { createApp, ref, reactive, onMounted, onUnmounted } = Vue;
 
       createApp({
         setup() {
-          // State
           const viewer = ref(null);
           const navMesh = ref(null);
-
-          // Assets
           const bgSrc = ref(null);
           const charImgSrc = ref(null);
 
@@ -236,180 +197,161 @@
             y: window.innerHeight * 0.8,
           });
           const isDragging = ref(false);
-          const baseWidth = ref(200); // 角色图片的基础显示宽度
+          const baseWidth = ref(150);
 
-          // Real-time Calculation
+          // Metrics
           const currentScale = ref(1.0);
           const currentDepthVal = ref(0);
-          const currentUV = reactive({ u: 0, v: 0 });
+          let gridData = null; // 缓存网格数据
 
-          // Grid Data Cache
-          let gridData = null; // { rows, cols, data[r][c] }
-
-          // --- 1. File Loading ---
+          // --- 1. 文件加载逻辑 ---
           const loadFile = (event, type) => {
             const file = event.target.files[0];
             if (!file) return;
-
             const reader = new FileReader();
             reader.onload = (e) => {
-              if (type === "bg") {
-                initViewer(e.target.result);
-              } else if (type === "char") {
-                charImgSrc.value = e.target.result;
-              } else if (type === "json") {
+              if (type === "bg") initViewer(e.target.result);
+              else if (type === "char") charImgSrc.value = e.target.result;
+              else if (type === "json") {
                 try {
                   const json = JSON.parse(e.target.result);
-                  // 兼容 v2/v3 格式
                   navMesh.value = json.nav_mesh || json;
                   processGridData();
                 } catch (err) {
-                  alert("JSON 格式错误");
+                  alert("JSON Error");
                 }
               }
             };
-
             if (type === "json") reader.readAsText(file);
             else reader.readAsDataURL(file);
           };
 
-          // --- 2. Pannellum Viewer ---
+          // --- 2. Pannellum 初始化 ---
           const initViewer = (imageSrc) => {
             if (viewer.value) viewer.value.destroy();
-
             viewer.value = pannellum.viewer("panorama", {
               type: "equirectangular",
               panorama: imageSrc,
               autoLoad: true,
               compass: false,
               showZoomCtrl: false,
-              mouseZoom: false, // 禁用滚轮缩放，避免干扰拖拽体验
-              pitch: -20, // 初始视角看地面
+              mouseZoom: false,
+              pitch: -20,
             });
 
-            // 监听视角变化，因为视角变了，屏幕上同一个点的 Scale 也会变
+            // 监听视角转动 (背景动 -> 人不动 -> 相对位置变了 -> Scale变)
+            viewer.value.on("animate", updateScaleFromScreenPos);
             viewer.value.on("mouseup", updateScaleFromScreenPos);
-            viewer.value.on("animate", updateScaleFromScreenPos); // 旋转时持续更新
           };
 
-          // --- 3. Drag Logic ---
-          const onMouseDown = (e) => {
+          // --- 3. 核心：拖拽逻辑 (Global Listeners) ---
+          const startDrag = (e) => {
             isDragging.value = true;
+            // 可选：记录点击偏移量，这里简化为直接跟随中心
           };
 
-          const onMouseMove = (e) => {
-            if (isDragging.value) {
-              charPos.x = e.clientX;
-              charPos.y = e.clientY;
-              updateScaleFromScreenPos();
-            }
+          const handleDrag = (e) => {
+            if (!isDragging.value) return;
+
+            // 1. 更新 Character 屏幕坐标
+            charPos.x = e.clientX;
+            charPos.y = e.clientY;
+
+            // 2. 🔥 关键：拖动时立即计算新的 Scale
+            updateScaleFromScreenPos();
           };
 
-          const onMouseUp = () => {
+          const stopDrag = () => {
             isDragging.value = false;
           };
 
-          // --- 4. The Core Algorithm: Screen -> UV -> Grid Interpolation ---
+          // 绑定到 window 以防鼠标移出浏览器或 div
+          onMounted(() => {
+            window.addEventListener("mousemove", handleDrag);
+            window.addEventListener("mouseup", stopDrag);
+          });
+          onUnmounted(() => {
+            window.removeEventListener("mousemove", handleDrag);
+            window.removeEventListener("mouseup", stopDrag);
+          });
 
+          // --- 4. 算法：屏幕坐标 -> JSON网格 -> Scale ---
           const processGridData = () => {
             if (!navMesh.value) return;
             const mesh = navMesh.value;
-            // 将 flat points 数组转换为 2D 矩阵方便查询
-            // 假设 points 是按行优先或列优先排列的，我们建立查找表
+            // 将线性数组转为二维矩阵，方便查询
             const grid = Array(mesh.rows)
               .fill(0)
               .map(() => Array(mesh.cols).fill(null));
-
             mesh.points.forEach((pt) => {
               const c = pt.grid_pos[0];
               const r = pt.grid_pos[1];
-              if (r < mesh.rows && c < mesh.cols) {
-                grid[r][c] = pt;
-              }
+              if (r < mesh.rows && c < mesh.cols) grid[r][c] = pt;
             });
             gridData = grid;
-            updateScaleFromScreenPos(); // 初始计算
+            updateScaleFromScreenPos();
           };
 
           const updateScaleFromScreenPos = () => {
             if (!viewer.value || !gridData) return;
 
-            // A. Screen (x,y) -> Spherical (Pitch, Yaw)
-            // Pannellum 提供 mouseEventToCoords，我们需要模拟一个 event 对象
-            // 或者更直接：我们需要反向投影。Pannellum 没有直接暴露 pixelToCoords
-            // 但 mouseEventToCoords 实际上是用 clientX/Y 计算的。
-
-            // 我们构造一个伪造的 event 对象传入
+            // A. 模拟点击事件获取球坐标 (Pitch/Yaw)
+            // 这里的 charPos.x/y 既可以是鼠标位置(拖动时)，也可以是固定位置(转背景时)
             const mockEvent = {
               clientX: charPos.x,
               clientY: charPos.y,
-              target: viewer.value.getContainer(), // 需要是 canvas 容器
+              target: viewer.value.getContainer(),
             };
 
-            // 获取对应球坐标
+            // Pannellum 内部反投影
             const coords = viewer.value.mouseEventToCoords(mockEvent);
-            // 注意：如果鼠标在画面外，Pannellum 可能返回 undefined
-            if (!coords || coords.length < 2) return;
+            if (!coords || coords.length < 2) return; // 鼠标可能在画布外
 
             const pitch = coords[0];
             const yaw = coords[1];
 
-            // B. Spherical -> UV
-            // Equirectangular mapping:
-            // U = (Yaw + 180) / 360  (0..1)
-            // V = (90 - Pitch) / 180 (0..1) -> 0 is Top, 1 is Bottom
-
+            // B. 球坐标 -> UV 坐标
+            // U: Yaw -180~180 -> 0~1
             let u = (yaw + 180) / 360.0;
+            // V: Pitch 90(天)~-90(地) -> 0~1
             let v = (90 - pitch) / 180.0;
 
-            // 规范化 u, v
+            // 归一化
             u = u % 1.0;
             if (u < 0) u += 1.0;
             v = Math.max(0, Math.min(1, v));
 
-            currentUV.u = u;
-            currentUV.v = v;
-
-            // C. Bilinear Interpolation on Grid
-            calculateScaleFromUV(u, v);
+            // C. 查表插值
+            calculateBilinearScale(u, v);
           };
 
-          const calculateScaleFromUV = (u, v) => {
-            if (!navMesh.value) return;
+          const calculateBilinearScale = (u, v) => {
             const { rows, cols } = navMesh.value;
-
-            // 我们的 Grid 是非线性的吗？不，我们之前生成的是均匀网格
-            // row_steps = 0.55 -> 0.95
-            // col_steps = 0.0 -> 1.0
-
-            // 必须硬编码我们在 Python 里定义的范围，或者从 JSON 里读取（如果存了的话）
-            // 假设 Python 代码未变：
+            // 硬编码 Python 中生成的网格范围 (如果不匹配会导致错位)
+            // 建议后续将这些 range 也写入 JSON
             const V_START = 0.55;
             const V_END = 0.95;
-            const U_START = 0.0;
-            const U_END = 1.0;
 
-            // 如果 v 超出网格范围（比如看向天空），给默认值
+            // 越界处理
             if (v < V_START) {
-              currentScale.value = 0.1; // 极远处
+              currentScale.value = 0.15;
               return;
-            }
+            } // 太远了
             if (v > V_END) {
-              currentScale.value = 2.5; // 极近处 (或取网格最大值)
+              currentScale.value = 2.5;
               return;
-            }
+            } // 太近了
 
-            // 找到对应的 Grid 索引 (float)
-            // U 是 0-360 循环的，需要特殊处理边界
-            const u_ratio = (u - U_START) / (U_END - U_START); // 0..1
-            const v_ratio = (v - V_START) / (V_END - V_START); // 0..1
+            // 计算 Grid 浮点索引
+            const u_ratio = u; // 0~1
+            const v_ratio = (v - V_START) / (V_END - V_START); // 0~1映射到网格区域
 
             let c_float = u_ratio * cols;
-            let r_float = v_ratio * (rows - 1); // rows 个点，有 rows-1 个间隔
+            let r_float = v_ratio * (rows - 1);
 
-            // 获取 4 个临近点索引
+            // 获取四个邻近点
             let c0 = Math.floor(c_float) % cols;
-            let c1 = (c0 + 1) % cols; // 循环连接
+            let c1 = (c0 + 1) % cols;
             let r0 = Math.floor(r_float);
             let r1 = Math.min(r0 + 1, rows - 1);
 
@@ -417,23 +359,22 @@
             let w_c = c_float - Math.floor(c_float);
             let w_r = r_float - Math.floor(r_float);
 
-            // 查表
             const p00 = gridData[r0][c0];
             const p01 = gridData[r0][c1];
             const p10 = gridData[r1][c0];
             const p11 = gridData[r1][c1];
 
-            if (!p00 || !p01 || !p10 || !p11) return;
+            if (!p00 || !p11) return;
 
             // 双线性插值 Scale
-            const s0 = p00.scale * (1 - w_c) + p01.scale * w_c;
-            const s1 = p10.scale * (1 - w_c) + p11.scale * w_c;
-            const finalScale = s0 * (1 - w_r) + s1 * w_r;
+            const s_top = p00.scale * (1 - w_c) + p01.scale * w_c;
+            const s_btm = p10.scale * (1 - w_c) + p11.scale * w_c;
+            const finalScale = s_top * (1 - w_r) + s_btm * w_r;
 
-            // 插值 Depth (用于调试)
-            const d0 = p00.depth_val * (1 - w_c) + p01.depth_val * w_c;
-            const d1 = p10.depth_val * (1 - w_c) + p11.depth_val * w_c;
-            currentDepthVal.value = Math.round(d0 * (1 - w_r) + d1 * w_r);
+            // 插值 Depth (仅展示)
+            const d_top = p00.depth_val * (1 - w_c) + p01.depth_val * w_c;
+            const d_btm = p10.depth_val * (1 - w_c) + p11.depth_val * w_c;
+            currentDepthVal.value = Math.round(d_top * (1 - w_r) + d_btm * w_r);
 
             currentScale.value = finalScale;
           };
@@ -443,14 +384,12 @@
             bgSrc,
             charImgSrc,
             charPos,
-            onMouseDown,
-            onMouseMove,
-            onMouseUp,
             baseWidth,
+            isDragging,
+            startDrag, // 暴露给 template
             navMesh,
             currentScale,
             currentDepthVal,
-            currentUV,
           };
         },
       }).mount("#app");
