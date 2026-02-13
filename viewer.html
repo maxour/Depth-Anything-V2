@@ -1,0 +1,178 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>360 Debug Viewer</title>
+    <script src="https://unpkg.com/vue@3/dist/vue.global.js"></script>
+    <link
+      rel="stylesheet"
+      href="https://cdn.jsdelivr.net/npm/pannellum@2.5.6/build/pannellum.css"
+    />
+    <script
+      type="text/javascript"
+      src="https://cdn.jsdelivr.net/npm/pannellum@2.5.6/build/pannellum.js"
+    ></script>
+
+    <style>
+      body,
+      html {
+        margin: 0;
+        padding: 0;
+        height: 100%;
+        overflow: hidden;
+        font-family: sans-serif;
+        background-color: #000;
+      }
+      #app {
+        height: 100%;
+        display: flex;
+        flex-direction: column;
+      }
+      /* 全景容器 */
+      #panorama {
+        width: 100%;
+        height: 100%;
+        z-index: 1;
+      }
+      /* 控制层 */
+      .controls {
+        position: absolute;
+        top: 20px;
+        left: 20px;
+        z-index: 10;
+        background: rgba(0, 0, 0, 0.7);
+        padding: 15px;
+        border-radius: 8px;
+        color: white;
+        backdrop-filter: blur(5px);
+      }
+      .file-input-wrapper {
+        margin-bottom: 10px;
+      }
+      input[type="file"] {
+        display: none;
+      }
+      .custom-file-upload {
+        border: 1px solid #ccc;
+        display: inline-block;
+        padding: 6px 12px;
+        cursor: pointer;
+        background: #3498db;
+        color: white;
+        border-radius: 4px;
+        transition: background 0.3s;
+      }
+      .custom-file-upload:hover {
+        background: #2980b9;
+      }
+      .status {
+        font-size: 12px;
+        color: #aaa;
+        margin-top: 5px;
+      }
+    </style>
+  </head>
+  <body>
+    <div id="app">
+      <div id="panorama"></div>
+
+      <div class="controls">
+        <h3>360 Scene Debugger</h3>
+        <p class="status">请选择 Python 生成的 scene_debug_v2.jpg</p>
+
+        <div class="file-input-wrapper">
+          <label for="file-upload" class="custom-file-upload">
+            📂 打开图片
+          </label>
+          <input
+            id="file-upload"
+            type="file"
+            @change="handleFileUpload"
+            accept="image/*"
+          />
+        </div>
+
+        <div v-if="fileName" class="status">当前文件: {{ fileName }}</div>
+        <div v-if="viewer" class="status">
+          Pitch: {{ pitch.toFixed(1) }} | Yaw: {{ yaw.toFixed(1) }}
+        </div>
+      </div>
+    </div>
+
+    <script>
+      const { createApp, ref, onMounted, onBeforeUnmount } = Vue;
+
+      createApp({
+        setup() {
+          const viewer = ref(null);
+          const fileName = ref("");
+          const pitch = ref(0);
+          const yaw = ref(0);
+          let updateInterval = null;
+
+          // 初始化播放器
+          const initViewer = (imageSource) => {
+            // 如果已存在，先销毁
+            if (viewer.value) {
+              viewer.value.destroy();
+            }
+
+            viewer.value = pannellum.viewer("panorama", {
+              type: "equirectangular",
+              panorama: imageSource,
+              autoLoad: true,
+              autoRotate: -2, // 负数向右转，正数向左转
+              compass: true,
+              showZoomCtrl: false, // 滚轮缩放即可
+              pitch: -20, // 初始视角稍微向下看地面网格
+            });
+
+            // 启动定时器更新 UI 上的坐标显示
+            if (updateInterval) clearInterval(updateInterval);
+            updateInterval = setInterval(() => {
+              if (viewer.value) {
+                pitch.value = viewer.value.getPitch();
+                yaw.value = viewer.value.getYaw();
+              }
+            }, 100);
+          };
+
+          // 处理文件上传 (解决本地打开 HTML 的跨域问题)
+          const handleFileUpload = (event) => {
+            const file = event.target.files[0];
+            if (!file) return;
+
+            fileName.value = file.name;
+
+            // 使用 FileReader 读取本地文件为 DataURL
+            const reader = new FileReader();
+            reader.onload = (e) => {
+              const result = e.target.result;
+              initViewer(result);
+            };
+            reader.readAsDataURL(file);
+          };
+
+          // 尝试加载默认文件 (这需要你在本地启动 http server 才能生效)
+          onMounted(() => {
+            // 如果你想在 server 环境下直接加载，解开下面这行
+            // initViewer('./scene_debug_v2.jpg');
+          });
+
+          onBeforeUnmount(() => {
+            if (updateInterval) clearInterval(updateInterval);
+          });
+
+          return {
+            handleFileUpload,
+            fileName,
+            viewer,
+            pitch,
+            yaw,
+          };
+        },
+      }).mount("#app");
+    </script>
+  </body>
+</html>
