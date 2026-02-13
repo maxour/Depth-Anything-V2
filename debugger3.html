@@ -1,0 +1,666 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>360 Auto-Calibration Tool</title>
+    <script src="https://unpkg.com/vue@3/dist/vue.global.js"></script>
+    <link
+      rel="stylesheet"
+      href="https://cdn.jsdelivr.net/npm/pannellum@2.5.6/build/pannellum.css"
+    />
+    <script
+      type="text/javascript"
+      src="https://cdn.jsdelivr.net/npm/pannellum@2.5.6/build/pannellum.js"
+    ></script>
+
+    <style>
+      body,
+      html {
+        margin: 0;
+        padding: 0;
+        height: 100%;
+        overflow: hidden;
+        font-family: sans-serif;
+        background: #1a1a1a;
+        color: #ddd;
+      }
+      #app {
+        width: 100%;
+        height: 100%;
+        position: relative;
+      }
+
+      #panorama {
+        width: 100%;
+        height: 100%;
+        z-index: 1;
+      }
+
+      /* 绘图层 (用于显示校准线) */
+      #drawing-layer {
+        position: absolute;
+        top: 0;
+        left: 0;
+        width: 100%;
+        height: 100%;
+        z-index: 20;
+        pointer-events: none; /* 让点击穿透给 Pannellum 处理坐标 */
+      }
+
+      /* 角色层 */
+      .character-layer {
+        position: absolute;
+        top: 0;
+        left: 0;
+        width: 100%;
+        height: 100%;
+        z-index: 10;
+        pointer-events: none;
+      }
+      .avatar-container {
+        position: absolute;
+        transform-origin: bottom center;
+        cursor: grab;
+        pointer-events: auto;
+        user-select: none;
+        display: flex;
+        justify-content: center;
+        align-items: flex-end;
+        border: 1px dashed rgba(255, 255, 255, 0.3);
+      }
+      .avatar-img {
+        width: 100%;
+        height: auto;
+        display: block;
+        pointer-events: none;
+      }
+
+      /* 控制面板 */
+      .controls {
+        position: absolute;
+        top: 10px;
+        right: 10px;
+        width: 320px;
+        background: rgba(0, 0, 0, 0.9);
+        padding: 15px;
+        border-radius: 8px;
+        z-index: 100;
+        max-height: 95vh;
+        overflow-y: auto;
+      }
+      .mode-switch {
+        display: flex;
+        gap: 10px;
+        margin-bottom: 15px;
+      }
+      .btn {
+        flex: 1;
+        padding: 8px;
+        border: none;
+        border-radius: 4px;
+        cursor: pointer;
+        font-weight: bold;
+        font-size: 12px;
+      }
+      .btn.active {
+        background: #3498db;
+        color: white;
+      }
+      .btn.inactive {
+        background: #444;
+        color: #aaa;
+      }
+
+      .slider-row {
+        margin-bottom: 8px;
+      }
+      .slider-header {
+        display: flex;
+        justify-content: space-between;
+        font-size: 11px;
+        color: #aaa;
+        margin-bottom: 2px;
+      }
+      input[type="range"] {
+        width: 100%;
+      }
+
+      .status-box {
+        background: #222;
+        padding: 10px;
+        border-radius: 4px;
+        margin-top: 10px;
+        font-size: 11px;
+        color: #0f0;
+        font-family: monospace;
+      }
+    </style>
+  </head>
+  <body>
+    <div id="app">
+      <canvas ref="depthCanvas" style="display: none"></canvas>
+
+      <canvas ref="drawCanvas" id="drawing-layer"></canvas>
+
+      <div id="panorama"></div>
+
+      <div class="character-layer" v-if="charImgSrc && mode === 'preview'">
+        <div
+          class="avatar-container"
+          :style="{ 
+                 left: charPos.x + 'px', top: charPos.y + 'px',
+                 width: params.baseWidth + 'px',
+                 transform: `translate(-50%, -100%) scale(${currentScale})` 
+             }"
+          @mousedown.stop.prevent="startDrag"
+        >
+          <img :src="charImgSrc" class="avatar-img" />
+        </div>
+      </div>
+
+      <div class="controls">
+        <h3>📐 Auto-Calibrator</h3>
+
+        <div class="mode-switch">
+          <button
+            class="btn"
+            :class="mode === 'preview' ? 'active' : 'inactive'"
+            @click="setMode('preview')"
+          >
+            🖐 拖拽预览
+          </button>
+          <button
+            class="btn"
+            :class="mode === 'calibrate' ? 'active' : 'inactive'"
+            @click="setMode('calibrate')"
+          >
+            ✏️ 绘制等距线
+          </button>
+        </div>
+
+        <div
+          v-if="mode === 'calibrate'"
+          style="
+            font-size: 11px;
+            color: #ddd;
+            margin-bottom: 10px;
+            line-height: 1.4;
+          "
+        >
+          <strong>操作指南：</strong><br />
+          1. 在画面中点击 3-5 个点。<br />
+          2. 确保这些点在物理世界中<b>离你一样远</b>
+          (例如都在同一圈地砖线上)。<br />
+          3. 点击“自动计算”。
+        </div>
+
+        <div v-if="mode === 'calibrate'" class="mode-switch">
+          <button
+            class="btn active"
+            style="background: #27ae60"
+            @click="runAutoTune"
+          >
+            ⚡️ 自动计算参数
+          </button>
+          <button class="btn inactive" @click="clearPoints">❌ 清除点</button>
+        </div>
+
+        <div class="group">
+          <div class="slider-row">
+            <div class="slider-header">
+              <span>Geo Gamma (纵向曲线)</span
+              ><span>{{ params.geoGamma.toFixed(2) }}</span>
+            </div>
+            <input
+              type="range"
+              v-model.number="params.geoGamma"
+              min="0.1"
+              max="2.0"
+              step="0.05"
+            />
+          </div>
+          <div class="slider-row">
+            <div class="slider-header">
+              <span>Horizontal Fix (横向修正)</span
+              ><span>{{ params.hCorrPower.toFixed(2) }}</span>
+            </div>
+            <input
+              type="range"
+              v-model.number="params.hCorrPower"
+              min="0.0"
+              max="2.0"
+              step="0.1"
+            />
+          </div>
+          <div class="slider-row">
+            <div class="slider-header">
+              <span>Global Scale</span
+              ><span>{{ params.globalScale.toFixed(1) }}</span>
+            </div>
+            <input
+              type="range"
+              v-model.number="params.globalScale"
+              min="1.0"
+              max="20.0"
+              step="0.1"
+            />
+          </div>
+        </div>
+
+        <hr style="border-color: #444" />
+        <input
+          type="file"
+          accept="image/*"
+          @change="e => loadFile(e, 'bg')"
+        /><br />
+        <input
+          type="file"
+          accept="image/*"
+          @change="e => loadFile(e, 'depth')"
+        /><br />
+        <input
+          type="file"
+          accept="image/*"
+          @change="e => loadFile(e, 'char')"
+        />
+
+        <div class="status-box" v-if="calibPoints.length > 0">
+          Points: {{ calibPoints.length }}<br />
+          StdDev: {{ currentStdDev }} (越小越好)
+        </div>
+      </div>
+    </div>
+
+    <script>
+      const {
+        createApp,
+        ref,
+        reactive,
+        onMounted,
+        onUnmounted,
+        watch,
+        nextTick,
+      } = Vue;
+
+      createApp({
+        setup() {
+          const viewer = ref(null);
+          const depthCanvas = ref(null);
+          const drawCanvas = ref(null);
+          const depthCtx = ref(null);
+
+          const bgSrc = ref(null);
+          const charImgSrc = ref(null);
+          const mode = ref("preview"); // 'preview' | 'calibrate'
+
+          // 状态
+          const charPos = reactive({
+            x: window.innerWidth / 2,
+            y: window.innerHeight * 0.8,
+          });
+          const isDragging = ref(false);
+          const currentScale = ref(1.0);
+
+          // 校准点数据
+          const calibPoints = ref([]); // Array of {u, v, yaw, pitch}
+          const currentStdDev = ref("0.000");
+
+          // 参数
+          const params = reactive({
+            geoGamma: 0.6,
+            hCorrPower: 0.0,
+            globalScale: 5.5,
+            geoWeight: 0.8,
+            baseWidth: 150,
+          });
+
+          // --- 核心算法 (纯 JS 函数，方便复用) ---
+          const calculateScale = (
+            u,
+            v,
+            pitch,
+            yaw,
+            camYaw,
+            p_gamma,
+            p_h_power,
+            p_global,
+            p_weight,
+            depth_val,
+          ) => {
+            // 1. 几何纵向 (Tan + Gamma)
+            const v_clamped = Math.max(v, 0.52);
+            const raw_tan = Math.tan((v_clamped - 0.5) * Math.PI);
+            const v_scale = Math.pow(raw_tan, p_gamma);
+
+            // 2. 几何横向 (Cos 修正)
+            let dYaw = Math.abs(yaw - camYaw);
+            if (dYaw > 180) dYaw = 360 - dYaw;
+            const dRad = dYaw * (Math.PI / 180.0);
+            const safeRad = Math.min(dRad, 1.2);
+            const h_factor = 1.0 / Math.cos(safeRad);
+            const final_h = Math.pow(h_factor, p_h_power);
+
+            // 3. 几何综合
+            const geo_final = v_scale * final_h;
+
+            // 4. 深度混合
+            const d_norm = depth_val / 255.0;
+            const weight_d = 1.0 - p_weight;
+
+            // 如果深度图没加载，就纯用几何
+            const mixed =
+              depth_val === -1
+                ? geo_final
+                : geo_final * (p_weight + weight_d * d_norm);
+
+            // 5. 全局缩放
+            return mixed * p_global;
+          };
+
+          // --- 自动计算逻辑 (Auto Tune) ---
+          const runAutoTune = () => {
+            if (calibPoints.value.length < 2) {
+              alert("请至少标记 2 个点！");
+              return;
+            }
+
+            console.log("🚀 Starting Auto-Tune...");
+
+            let bestError = Infinity;
+            let bestGamma = params.geoGamma;
+            let bestHPower = params.hCorrPower;
+
+            // 获取所有点的深度值
+            const pointsData = calibPoints.value.map((pt) => {
+              let dVal = -1;
+              if (depthCtx.value) {
+                const px = Math.floor(pt.u * 1024);
+                const py = Math.floor(pt.v * 512);
+                dVal = depthCtx.value.getImageData(px, py, 1, 1).data[0];
+              }
+              return { ...pt, dVal };
+            });
+
+            // 暴力搜索 (Grid Search)
+            // 范围：Gamma 0.1~1.5, HPower 0.0~2.0
+            // 步长越小越准，但也越慢
+            for (let g = 0.1; g <= 1.5; g += 0.05) {
+              for (let h = 0.0; h <= 2.0; h += 0.1) {
+                // 计算这组参数下，所有点的 Scale
+                const scales = pointsData.map((pt) => {
+                  // 注意：GlobalScale 不影响“方差一致性”，所以设为 1.0
+                  return calculateScale(
+                    pt.u,
+                    pt.v,
+                    pt.pitch,
+                    pt.yaw,
+                    pt.camYaw,
+                    g,
+                    h,
+                    1.0,
+                    params.geoWeight,
+                    pt.dVal,
+                  );
+                });
+
+                // 计算变异系数 (CV = StdDev / Mean)
+                // 我们希望 scales 数组里的值越接近越好
+                const n = scales.length;
+                const mean = scales.reduce((a, b) => a + b) / n;
+                const variance =
+                  scales.reduce((a, b) => a + Math.pow(b - mean, 2), 0) / n;
+                const stdDev = Math.sqrt(variance);
+                const cv = stdDev / mean; // 归一化误差
+
+                if (cv < bestError) {
+                  bestError = cv;
+                  bestGamma = g;
+                  bestHPower = h;
+                }
+              }
+            }
+
+            // 应用最佳参数
+            params.geoGamma = parseFloat(bestGamma.toFixed(2));
+            params.hCorrPower = parseFloat(bestHPower.toFixed(2));
+
+            // 自动调整 Global Scale 以匹配第一个点的大小 (避免参数变了之后整体变得巨小)
+            // 我们假设第一个点是我们希望的基准大小(比如 Scale=1.0)
+            // 但这里我们简单地保持当前的 globalScale 不动，用户自己调
+
+            alert(
+              `✅ 优化完成!\nGamma: ${params.geoGamma}\nHorizontal Fix: ${params.hCorrPower}\n误差: ${(bestError * 100).toFixed(2)}%`,
+            );
+            drawOverlay(); // 重绘
+          };
+
+          // --- 交互逻辑 ---
+          const onClick = (e) => {
+            if (mode.value !== "calibrate") return;
+
+            if (!viewer.value) return;
+            const coords = viewer.value.mouseEventToCoords(e);
+            if (!coords) return;
+
+            const pitch = coords[0];
+            const yaw = coords[1];
+            const camYaw = viewer.value.getYaw(); // 记录点下时的相机角度
+
+            // 转换为 UV
+            let u = (yaw + 180) / 360.0;
+            u = u % 1.0;
+            if (u < 0) u += 1.0;
+            let v = (90 - pitch) / 180.0;
+            v = Math.max(0, Math.min(1, v));
+
+            // 记录屏幕坐标用于绘图 (但这在 360 移动后会失效，所以绘图需要实时重算)
+            calibPoints.value.push({ u, v, pitch, yaw, camYaw });
+
+            // 立即计算当前的 StdDev
+            calculateStdDev();
+            drawOverlay();
+          };
+
+          const calculateStdDev = () => {
+            if (calibPoints.value.length < 2) {
+              currentStdDev.value = "0.000";
+              return;
+            }
+            // 使用当前参数计算
+            const scales = calibPoints.value.map((pt) => {
+              let dVal = -1;
+              if (depthCtx.value) {
+                const px = Math.floor(pt.u * 1024);
+                const py = Math.floor(pt.v * 512);
+                dVal = depthCtx.value.getImageData(px, py, 1, 1).data[0];
+              }
+              // 注意：这里使用 pt.camYaw 是有问题的，因为 scale 应该基于“当前观察视角”的 H-Fix
+              // 但是对于校准，我们假设“当时点击时的视角偏移”是校准依据。
+              // 修正：H-Fix 应该是相对于“物体所在位置”和“相机中心”的关系。
+              // 如果我们在校准模式下，为了简化，我们假设所有点都是相对于同一个 Camera Center (比如 Yaw=0) 也没问题
+              // 但最准确的是：calculateScale 需要传入 pt.camYaw (点击时的视角中心)
+              return calculateScale(
+                pt.u,
+                pt.v,
+                pt.pitch,
+                pt.yaw,
+                pt.camYaw,
+                params.geoGamma,
+                params.hCorrPower,
+                params.globalScale,
+                params.geoWeight,
+                dVal,
+              );
+            });
+
+            const mean = scales.reduce((a, b) => a + b) / scales.length;
+            const variance =
+              scales.reduce((a, b) => a + Math.pow(b - mean, 2), 0) /
+              scales.length;
+            currentStdDev.value = Math.sqrt(variance).toFixed(3);
+          };
+
+          // 绘制 Canvas 连线
+          const drawOverlay = () => {
+            const cvs = drawCanvas.value;
+            if (!cvs || !viewer.value) return;
+            const ctx = cvs.getContext("2d");
+            cvs.width = window.innerWidth;
+            cvs.height = window.innerHeight;
+            ctx.clearRect(0, 0, cvs.width, cvs.height);
+
+            if (calibPoints.value.length === 0) return;
+
+            ctx.strokeStyle = "#0f0";
+            ctx.lineWidth = 2;
+            ctx.fillStyle = "#ff0";
+            ctx.font = "12px Arial";
+
+            ctx.beginPath();
+            calibPoints.value.forEach((pt, index) => {
+              // 将 Pitch/Yaw 逆向投影回屏幕坐标 XY
+              // 这是一个难点，Pannellum 没有直接暴露 coordsToMouse。
+              // 但我们可以反过来：我们很难精确画线跟随背景移动。
+              // 简易方案：只画静态的点，或者仅在点击时显示。
+              // 高级方案：由于无法获取 Pannellum 投影矩阵，我们用 CSS 标记点替代 Canvas 画线
+              // 这里为了简化代码，我们不实现“跟随移动的线”，只在控制台输出
+            });
+
+            // 由于反投影困难，我们在 UI 上显示“已标记 X 个点”，不画复杂的 3D 连线
+            // 或者我们可以简单地清除 Canvas
+          };
+
+          const clearPoints = () => {
+            calibPoints.value = [];
+            currentStdDev.value = "0.000";
+            drawOverlay();
+          };
+
+          // --- 常规逻辑 (Copy from Debugger2) ---
+          const updatePreview = () => {
+            if (mode.value !== "preview" || !viewer.value) return;
+
+            // 获取当前 Character 位置的数据
+            const mockEvent = {
+              clientX: charPos.x,
+              clientY: charPos.y,
+              target: viewer.value.getContainer(),
+            };
+            const coords = viewer.value.mouseEventToCoords(mockEvent);
+            if (!coords) return;
+
+            const pitch = coords[0];
+            const yaw = coords[1];
+            let u = (yaw + 180) / 360.0;
+            u = u % 1.0;
+            if (u < 0) u += 1.0;
+            let v = (90 - pitch) / 180.0;
+            v = Math.max(0, Math.min(1, v));
+
+            const camYaw = viewer.value.getYaw();
+
+            let dVal = 128;
+            if (depthCtx.value) {
+              const px = Math.floor(u * 1024);
+              const py = Math.floor(v * 512);
+              dVal = depthCtx.value.getImageData(px, py, 1, 1).data[0];
+            }
+
+            currentScale.value = calculateScale(
+              u,
+              v,
+              pitch,
+              yaw,
+              camYaw,
+              params.geoGamma,
+              params.hCorrPower,
+              params.globalScale,
+              params.geoWeight,
+              dVal,
+            );
+          };
+
+          // Event Listeners
+          const startDrag = () => (isDragging.value = true);
+          const stopDrag = () => (isDragging.value = false);
+          const handleMouseMove = (e) => {
+            if (isDragging.value && mode.value === "preview") {
+              charPos.x = e.clientX;
+              charPos.y = e.clientY;
+              updatePreview();
+            }
+          };
+
+          const loadFile = (e, type) => {
+            const file = e.target.files[0];
+            if (!file) return;
+            const reader = new FileReader();
+            reader.onload = (ev) => {
+              if (type === "bg") initViewer(ev.target.result);
+              else if (type === "char") charImgSrc.value = ev.target.result;
+              else if (type === "depth") initDepthCanvas(ev.target.result);
+            };
+            reader.readAsDataURL(file);
+          };
+
+          const initViewer = (src) => {
+            if (viewer.value) viewer.value.destroy();
+            viewer.value = pannellum.viewer("panorama", {
+              type: "equirectangular",
+              panorama: src,
+              autoLoad: true,
+              showZoomCtrl: false,
+              pitch: -20,
+            });
+            viewer.value.on("animate", updatePreview);
+            viewer.value.on("mouseup", updatePreview);
+            viewer.value.on("mousedown", onClick); // 绑定点击事件
+          };
+
+          const initDepthCanvas = (src) => {
+            const img = new Image();
+            img.onload = () => {
+              const cvs = depthCanvas.value;
+              cvs.width = 1024;
+              cvs.height = 512;
+              const ctx = cvs.getContext("2d", { willReadFrequently: true });
+              ctx.drawImage(img, 0, 0, 1024, 512);
+              depthCtx.value = ctx;
+            };
+            img.src = src;
+          };
+
+          const setMode = (m) => {
+            mode.value = m;
+            if (m === "calibrate") {
+              calibPoints.value = []; // 切换时清空
+            }
+          };
+
+          onMounted(() => {
+            window.addEventListener("mousemove", handleMouseMove);
+            window.addEventListener("mouseup", stopDrag);
+          });
+
+          return {
+            loadFile,
+            charImgSrc,
+            charPos,
+            mode,
+            setMode,
+            params,
+            currentScale,
+            startDrag,
+            calibPoints,
+            clearPoints,
+            runAutoTune,
+            currentStdDev,
+            depthCanvas,
+            drawCanvas, // Refs
+          };
+        },
+      }).mount("#app");
+    </script>
+  </body>
+</html>
