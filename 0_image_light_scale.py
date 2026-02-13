@@ -165,16 +165,38 @@ def analyze_scene_advanced(rgb_path, depth_path, output_dir):
         cv2.putText(debug_img, f"Light {i+1}", (cx+radius, cy), 
                    cv2.FONT_HERSHEY_SIMPLEX, 1, color, 2)
 
-    # 2. 画缩放网格点
+    # 2. 绘制缩放网格点 (重点修改部分)
+    print("🎨 Drawing Scale Circles...")
+    
     for pt in scale_points:
-        u, v = pt["uv"]
-        px, py = int(u * w), int(v * h)
+        px, py = pt["pixel"]
         scale = pt["scale"]
         
-        # 用圆圈大小代表 scale 大小
-        circle_r = int(scale * 10) 
-        cv2.circle(debug_img, (px, py), 3, (0, 0, 255), -1) # 红点是位置
-        cv2.circle(debug_img, (px, py), circle_r, (255, 0, 0), 1) # 蓝圈是建议大小
+        # --- 核心修正逻辑 ---
+        # 我们不能用固定的像素值，必须基于图片高度 (h) 计算。
+        # 设定：在 Scale=1.0 时，圆圈半径是图片高度的 2% (大约是一个人的占地半径)
+        # 例如 2880p 高度 -> 1.0 scale = 57 像素半径
+        base_radius_ratio = 0.02 
+        radius_px = int(h * base_radius_ratio * scale)
+        
+        # 确保最小可见性 (至少3个像素)
+        radius_px = max(radius_px, 3)
+        
+        # A. 绘制红点 (脚底锚点) - 实心
+        # 锚点大小也随分辨率变化，设为高度的 0.3%
+        anchor_radius = max(int(h * 0.003), 2)
+        cv2.circle(debug_img, (px, py), anchor_radius, (0, 0, 255), -1) 
+        
+        # B. 绘制蓝圈 (Avatar 缩放参考) - 空心
+        # 线宽随分辨率变化
+        line_thickness = max(int(h * 0.001), 1)
+        cv2.circle(debug_img, (px, py), radius_px, (255, 200, 0), line_thickness) 
+
+        # (可选) 每隔几个点标一下数值，防止太密集
+        if pt["grid_pos"][0] % 4 == 0 and pt["grid_pos"][1] % 2 == 0:
+            font_scale = h / 2000.0 # 字体随图片大小缩放
+            cv2.putText(debug_img, f"{scale:.2f}", (px + 10, py), 
+                       cv2.FONT_HERSHEY_SIMPLEX, font_scale, (255, 255, 255), 2)
 
     # 保存
     if not os.path.exists(output_dir):
