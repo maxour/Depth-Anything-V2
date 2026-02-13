@@ -1,3 +1,11 @@
+<!--
+Geo Gamma (Curve)   1   低值=压平曲线(远近差异小)，高值=陡峭
+Horizontal Fix    0.90   增加此值可让两边变大
+Geo Weight    0.8
+Depth Weight    0.2 Auto calculated (1 - Geo)
+Global Scale    2
+Char Base Width (px)    150
+-->
 <!doctype html>
 <html lang="en">
   <head>
@@ -272,6 +280,21 @@
 
           <div class="slider-row">
             <div class="slider-header">
+              <span>Horizontal Fix</span>
+              <span class="val">{{ params.hCorrPower.toFixed(2) }}</span>
+            </div>
+            <input
+              type="range"
+              v-model.number="params.hCorrPower"
+              min="0.0"
+              max="2.0"
+              step="0.1"
+            />
+            <div style="font-size: 10px; color: #888">增加此值可让两边变大</div>
+          </div>
+
+          <div class="slider-row">
+            <div class="slider-header">
               <span>Geo Weight</span>
               <span class="val">{{ params.geoWeight.toFixed(1) }}</span>
             </div>
@@ -371,6 +394,7 @@
             geoWeight: 0.8, // 几何权重 (0.8 = 80% 信任 tan, 20% 信任 Depth)
             globalScale: 5.5, // 全局放大倍数
             baseWidth: 150, // 角色基础像素宽度
+            hCorrPower: 0.0, // 水平修正力度 (0=不修正, >0=让两边变大)
           });
 
           const resetParams = () => {
@@ -491,11 +515,31 @@
 
             // 1. Geometric Factor (Tan + Gamma)
             // v=0.5 (Horizon), v=1.0 (Feet)
+            // 1. Vertical Scale (你现在的算法)
             const v_clamped = Math.max(v, 0.52);
             const raw_tan = Math.tan((v_clamped - 0.5) * Math.PI);
+            const v_scale = Math.pow(raw_tan, params.geoGamma);
 
-            // Apply Gamma (Slider Control)
-            const geometric_factor = Math.pow(raw_tan, params.geoGamma);
+            // 2. Horizontal Correction (新算法)
+            // 计算角色相对于当前视口中心的偏角
+            const camYaw = viewer.value.getYaw();
+            let dYaw = Math.abs(yaw - camYaw);
+            if (dYaw > 180) dYaw = 360 - dYaw; // 处理环绕
+            const dRad = dYaw * (Math.PI / 180.0);
+
+            // cos曲线：中间是1，两边变小
+            // 我们取倒数(1/cos)，让两边变大
+            // 限制 dRad 最大为 60度(1.04弧度)，防止除以0
+            const safeRad = Math.min(dRad, 1.0);
+            const h_factor = 1.0 / Math.cos(safeRad);
+
+            // 应用力度参数
+            // 如果 power=0，修正系数为1 (不生效)
+            // 如果 power=1，完全修正
+            const final_h_factor = Math.pow(h_factor, params.hCorrPower);
+
+            // 3. Combine
+            const geometric_factor = v_scale * final_h_factor;
 
             // 2. Depth Factor
             const d_norm = depthVal / 255.0;
